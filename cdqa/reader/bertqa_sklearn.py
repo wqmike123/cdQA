@@ -35,18 +35,13 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, Tenso
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.autonotebook import tqdm, trange
 
-from pytorch_pretrained_bert.file_utils import (
-    PYTORCH_PRETRAINED_BERT_CACHE,
-    WEIGHTS_NAME,
-    CONFIG_NAME,
-)
-from pytorch_pretrained_bert.modeling import BertForQuestionAnswering, BertConfig
-from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
-from pytorch_pretrained_bert.tokenization import (
-    BasicTokenizer,
-    BertTokenizer,
-    whitespace_tokenize,
-)
+from transformers import PYTORCH_PRETRAINED_BERT_CACHE, WEIGHTS_NAME, CONFIG_NAME
+
+from transformers import BertForQuestionAnswering, DistilBertForQuestionAnswering
+from transformers import BertConfig, DistilBertConfig
+from transformers import BertTokenizer, DistilBertTokenizer
+from transformers import AdamW, WarmupLinearSchedule
+from transformers.tokenization_bert import BasicTokenizer, whitespace_tokenize
 
 from sklearn.base import BaseEstimator, TransformerMixin
 
@@ -108,21 +103,22 @@ class SquadExample(object):
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(
-        self,
-        unique_id,
-        example_index,
-        doc_span_index,
-        tokens,
-        token_to_orig_map,
-        token_is_max_context,
-        input_ids,
-        input_mask,
-        segment_ids,
-        start_position=None,
-        end_position=None,
-        is_impossible=None,
-    ):
+    def __init__(self,
+                 unique_id,
+                 example_index,
+                 doc_span_index,
+                 tokens,
+                 token_to_orig_map,
+                 token_is_max_context,
+                 input_ids,
+                 input_mask,
+                 segment_ids,
+                 cls_index,
+                 p_mask,
+                 paragraph_len,
+                 start_position=None,
+                 end_position=None,
+                 is_impossible=None):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -132,6 +128,9 @@ class InputFeatures(object):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
+        self.cls_index = cls_index
+        self.p_mask = p_mask
+        self.paragraph_len = paragraph_len
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
@@ -321,6 +320,16 @@ def _example_to_features_parallel(args_tuple):
         verbose,
     ) = args_tuple
 
+    cls_token_at_end = False
+    cls_token = '[CLS]'
+    sep_token = '[SEP]'
+    pad_token = 0
+    sequence_a_segment_id = 0
+    sequence_b_segment_id = 1
+    cls_token_segment_id = 0
+    pad_token_segment_id = 0
+    mask_padding_with_zero = True
+
     features = []
 
     query_tokens = tokenizer.tokenize(example.question_text)
@@ -383,89 +392,120 @@ def _example_to_features_parallel(args_tuple):
         token_to_orig_map = {}
         token_is_max_context = {}
         segment_ids = []
-        tokens.append("[CLS]")
-        segment_ids.append(0)
+
+        # p_mask: mask with 1 for token than cannot be in the answer (0 for token which can be in an answer)
+        # Original TF implem also keep the classification token (set to 0) (not sure why...)
+        p_mask = []
+
+        # CLS token at the beginning
+        if not cls_token_at_end:
+            tokens.append(cls_token)
+            segment_ids.append(cls_token_segment_id)
+            p_mask.append(0)
+            cls_index = 0
+
+        # Query
         for token in query_tokens:
             tokens.append(token)
-            segment_ids.append(0)
-        tokens.append("[SEP]")
-        segment_ids.append(0)
+            segment_ids.append(sequence_a_segment_id)
+            p_mask.append(1)
 
+        # SEP token
+        tokens.append(sep_token)
+        segment_ids.append(sequence_a_segment_id)
+        p_mask.append(1)
+
+        # Paragraph
         for i in range(doc_span.length):
             split_token_index = doc_span.start + i
             token_to_orig_map[len(tokens)] = tok_to_orig_index[split_token_index]
 
-            is_max_context = _check_is_max_context(
-                doc_spans, doc_span_index, split_token_index
-            )
+            is_max_context = _check_is_max_context(doc_spans, doc_span_index,
+                                                   split_token_index)
             token_is_max_context[len(tokens)] = is_max_context
             tokens.append(all_doc_tokens[split_token_index])
-            segment_ids.append(1)
-        tokens.append("[SEP]")
-        segment_ids.append(1)
+            segment_ids.append(sequence_b_segment_id)
+            p_mask.append(0)
+        paragraph_len = doc_span.length
+
+        # SEP token
+        tokens.append(sep_token)
+        segment_ids.append(sequence_b_segment_id)
+        p_mask.append(1)
+
+        # CLS token at the end
+        if cls_token_at_end:
+            tokens.append(cls_token)
+            segment_ids.append(cls_token_segment_id)
+            p_mask.append(0)
+            cls_index = len(tokens) - 1  # Index of classification token
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
-        input_mask = [1] * len(input_ids)
+        input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
 
         # Zero-pad up to the sequence length.
         while len(input_ids) < max_seq_length:
-            input_ids.append(0)
-            input_mask.append(0)
-            segment_ids.append(0)
+            input_ids.append(pad_token)
+            input_mask.append(0 if mask_padding_with_zero else 1)
+            segment_ids.append(pad_token_segment_id)
+            p_mask.append(1)
 
         assert len(input_ids) == max_seq_length
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
 
+        span_is_impossible = example.is_impossible
         start_position = None
         end_position = None
-        if is_training and not example.is_impossible:
+        if is_training and not span_is_impossible:
             # For training, if our document chunk does not contain an annotation
             # we throw it out, since there is nothing to predict.
             doc_start = doc_span.start
             doc_end = doc_span.start + doc_span.length - 1
             out_of_span = False
-            if not (tok_start_position >= doc_start and tok_end_position <= doc_end):
+            if not (tok_start_position >= doc_start and
+                    tok_end_position <= doc_end):
                 out_of_span = True
             if out_of_span:
                 start_position = 0
                 end_position = 0
+                span_is_impossible = True
             else:
                 doc_offset = len(query_tokens) + 2
                 start_position = tok_start_position - doc_start + doc_offset
                 end_position = tok_end_position - doc_start + doc_offset
-        if is_training and example.is_impossible:
-            start_position = 0
-            end_position = 0
+
+        if is_training and span_is_impossible:
+            start_position = cls_index
+            end_position = cls_index
+
         if example_index < 20 and verbose:
             logger.info("*** Example ***")
             logger.info("unique_id: %s" % (unique_id))
             logger.info("example_index: %s" % (example_index))
             logger.info("doc_span_index: %s" % (doc_span_index))
             logger.info("tokens: %s" % " ".join(tokens))
-            logger.info(
-                "token_to_orig_map: %s"
-                % " ".join(["%d:%d" % (x, y) for (x, y) in token_to_orig_map.items()])
-            )
-            logger.info(
-                "token_is_max_context: %s"
-                % " ".join(
-                    ["%d:%s" % (x, y) for (x, y) in token_is_max_context.items()]
-                )
-            )
+            logger.info("token_to_orig_map: %s" % " ".join([
+                "%d:%d" % (x, y) for (x, y) in token_to_orig_map.items()]))
+            logger.info("token_is_max_context: %s" % " ".join([
+                "%d:%s" % (x, y) for (x, y) in token_is_max_context.items()
+            ]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            if is_training and example.is_impossible:
+            logger.info(
+                "input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            logger.info(
+                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            if is_training and span_is_impossible:
                 logger.info("impossible example")
-            if is_training and not example.is_impossible:
-                answer_text = " ".join(tokens[start_position : (end_position + 1)])
+            if is_training and not span_is_impossible:
+                answer_text = " ".join(tokens[start_position:(end_position + 1)])
                 logger.info("start_position: %d" % (start_position))
                 logger.info("end_position: %d" % (end_position))
-                logger.info("answer: %s" % (answer_text))
+                logger.info(
+                    "answer: %s" % (answer_text))
 
         features.append(
             InputFeatures(
@@ -478,11 +518,12 @@ def _example_to_features_parallel(args_tuple):
                 input_ids=input_ids,
                 input_mask=input_mask,
                 segment_ids=segment_ids,
+                cls_index=cls_index,
+                p_mask=p_mask,
+                paragraph_len=paragraph_len,
                 start_position=start_position,
                 end_position=end_position,
-                is_impossible=example.is_impossible,
-            )
-        )
+                is_impossible=span_is_impossible))
 
     return features
 
@@ -954,6 +995,20 @@ def _compute_softmax(scores):
     for score in exp_scores:
         probs.append(score / total_sum)
     return probs
+
+
+def _n_best_predictions(final_predictions_sorted, n):
+    n = min(n, len(final_predictions_sorted))
+    final_prediction_list = []
+    for i in range(n):
+        curr_pred = (
+            final_predictions_sorted[i]["text"],
+            final_predictions_sorted[i]["title"],
+            final_predictions_sorted[i]["paragraph"],
+            final_predictions_sorted[i]["final_score"],
+        )
+        final_prediction_list.append(curr_pred)
+    return final_prediction_list
 
 
 class BertProcessor(BaseEstimator, TransformerMixin):
@@ -1448,40 +1503,36 @@ class BertQA(BaseEstimator):
             logger.info("  Num split examples = %d", len(eval_features))
             logger.info("  Batch size = %d", self.predict_batch_size)
 
-        all_input_ids = torch.tensor(
-            [f.input_ids for f in eval_features], dtype=torch.long
-        )
-        all_input_mask = torch.tensor(
-            [f.input_mask for f in eval_features], dtype=torch.long
-        )
-        all_segment_ids = torch.tensor(
-            [f.segment_ids for f in eval_features], dtype=torch.long
-        )
+        all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+        all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+        all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+        all_cls_index = torch.tensor([f.cls_index for f in eval_features], dtype=torch.long)
+        all_p_mask = torch.tensor([f.p_mask for f in eval_features], dtype=torch.float)
         all_example_index = torch.arange(all_input_ids.size(0), dtype=torch.long)
-        eval_data = TensorDataset(
-            all_input_ids, all_input_mask, all_segment_ids, all_example_index
-        )
+
+        eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
+                                  all_example_index, all_cls_index, all_p_mask)
         # Run prediction for full data
         eval_sampler = SequentialSampler(eval_data)
-        eval_dataloader = DataLoader(
-            eval_data, sampler=eval_sampler, batch_size=self.predict_batch_size
-        )
+        eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=self.predict_batch_size)
 
         self.model.to(self.device)
         self.model.eval()
         all_results = []
         if self.verbose_logging:
             logger.info("Start evaluating")
-        for input_ids, input_mask, segment_ids, example_indices in eval_dataloader:
+        for batch in eval_dataloader:
             if len(all_results) % 1000 == 0 and self.verbose_logging:
                 logger.info("Processing example: %d" % (len(all_results)))
-            input_ids = input_ids.to(self.device)
-            input_mask = input_mask.to(self.device)
-            segment_ids = segment_ids.to(self.device)
+            batch = tuple(t.to(self.device) for t in batch)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits = self.model(
-                    input_ids, segment_ids, input_mask
-                )
+                inputs = {'input_ids':      batch[0],
+                          'attention_mask': batch[1]
+                          }
+
+                example_indices = batch[3]
+                batch_start_logits, batch_end_logits = self.model(**inputs)
+                
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
@@ -1531,17 +1582,3 @@ class BertQA(BaseEstimator):
             return final_predictions
 
         return best_prediction
-
-
-def _n_best_predictions(final_predictions_sorted, n):
-    n = min(n, len(final_predictions_sorted))
-    final_prediction_list = []
-    for i in range(n):
-        curr_pred = (
-            final_predictions_sorted[i]["text"],
-            final_predictions_sorted[i]["title"],
-            final_predictions_sorted[i]["paragraph"],
-            final_predictions_sorted[i]["final_score"],
-        )
-        final_prediction_list.append(curr_pred)
-    return final_prediction_list
