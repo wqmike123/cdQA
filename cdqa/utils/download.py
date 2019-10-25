@@ -64,7 +64,7 @@ def download_model(model="bert-squad_1.1", dir="."):
     ----------
     model: str
         Model to be download. It should be one of the models in the list:
-        `bert-squad1.1`, `distilbert-squad_1.1`
+        `bert-squad_1.1`, `distilbert-squad_1.1`
 
     dir: str
         Directory where the dataset will be stored
