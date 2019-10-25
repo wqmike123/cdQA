@@ -93,9 +93,6 @@ def download_model(model="bert-squad_1.1", dir="."):
         file = url.split("/")[-1]
         if os.path.exists(os.path.join(dir, file)):
             print(file, "already downloaded")
-            if model == "distilbert-squad_1.1":
-                os.remove(os.path.join(dir, file))
-                wget.download(url=url, out=dir)
         else:
             wget.download(url=url, out=dir)
 
