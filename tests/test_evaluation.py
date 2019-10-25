@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 
 from cdqa.utils.filters import filter_paragraphs
-from cdqa.utils.evaluation import evaluate_pipeline
+from cdqa.utils.evaluation import evaluate_pipeline, evaluate_reader
 from cdqa.utils.download import *
 from cdqa.pipeline import QAPipeline
 
@@ -55,5 +55,14 @@ def test_evaluate_pipeline():
     eval_dict = evaluate_pipeline(cdqa_pipeline, "./test_data.json", output_dir=None)
 
     assert eval_dict["exact_match"] > 0.8
+    assert eval_dict["f1"] > 0.8
 
+
+def test_evaluate_reader():
+
+    download_model("bert-squad_1.1", dir="./models")
+    cdqa_pipeline = QAPipeline(reader="./models/bert_qa_vCPU-sklearn.joblib", n_jobs=-1)
+    eval_dict = evaluate_reader(cdqa_pipeline, "./test_data.json")
+
+    assert eval_dict["exact_match"] > 0.8
     assert eval_dict["f1"] > 0.8
