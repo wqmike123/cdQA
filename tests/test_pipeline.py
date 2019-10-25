@@ -23,8 +23,7 @@ def execute_pipeline(model, query, n_predictions=None):
 
     cdqa_pipeline = QAPipeline(reader=reader_path)
     cdqa_pipeline.fit_retriever(df)
-    if torch.cuda.is_available():
-        cdqa_pipeline.cuda()
+    
     if n_predictions is not None:
         predictions = cdqa_pipeline.predict(query, n_predictions=n_predictions)
         result = []
