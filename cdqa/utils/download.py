@@ -72,7 +72,8 @@ def download_model(model="bert-squad_1.1", dir="."):
     """
 
     models_url = {
-        "bert-squad_1.1": "https://github.com/cdqa-suite/cdQA/releases/download/bert_qa_vCPU/bert_qa_vCPU-sklearn.joblib"
+        "bert-squad_1.1": "https://github.com/cdqa-suite/cdQA/releases/download/bert_qa_vCPU/bert_qa_vCPU-sklearn.joblib",
+        "distilbert-squad_1.1": "https://github.com/cdqa-suite/cdQA/releases/download/distilbert_qa/distilbert_qa.joblib"
     }
 
     if not model in models_url:

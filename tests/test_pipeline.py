@@ -1,3 +1,4 @@
+import pytest
 from ast import literal_eval
 import pandas as pd
 import torch
@@ -6,17 +7,21 @@ from cdqa.utils.filters import filter_paragraphs
 from cdqa.utils.download import *
 from cdqa.pipeline import QAPipeline
 
-
-def execute_pipeline(query, n_predictions=None):
+def execute_pipeline(model, query, n_predictions=None):
     download_bnpp_data("./data/bnpp_newsroom_v1.1/")
-    download_model("bert-squad_1.1", dir="./models")
+    download_model(model + "-squad_1.1", dir="./models")
     df = pd.read_csv(
         "./data/bnpp_newsroom_v1.1/bnpp_newsroom-v1.1.csv",
         converters={"paragraphs": literal_eval},
     )
     df = filter_paragraphs(df)
 
-    cdqa_pipeline = QAPipeline(reader="models/bert_qa_vCPU-sklearn.joblib")
+    if model == "bert":
+        reader_path = "models/bert_qa_vCPU-sklearn.joblib"
+    else:
+        reader_path = "models/distilbert_qa.joblib"
+
+    cdqa_pipeline = QAPipeline(reader=reader_path)
     cdqa_pipeline.fit_retriever(df)
     if torch.cuda.is_available():
         cdqa_pipeline.cuda()
@@ -33,15 +38,15 @@ def execute_pipeline(query, n_predictions=None):
         result = (prediction[0], prediction[1])
         return result
 
-
-def test_predict():
-    assert execute_pipeline(
+@pytest.mark.parametrize("model", ["bert", "distilbert"])
+def test_predict(model):
+    assert execute_pipeline(model,
         "Since when does the Excellence Program of BNP Paribas exist?"
     ) == ("January 2016", "BNP Paribas’ commitment to universities and schools")
 
 
 def test_n_predictions():
-    predictions = execute_pipeline(
+    predictions = execute_pipeline("distilbert",
         "Since when does the Excellence Program of BNP Paribas exist?", 5
     )
 
