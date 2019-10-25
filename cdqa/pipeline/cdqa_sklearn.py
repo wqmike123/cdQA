@@ -91,7 +91,7 @@ class QAPipeline(BaseEstimator):
 
         self.retrieve_by_doc = retrieve_by_doc
 
-        if torch.cuda.is_available:
+        if torch.cuda.is_available():
             self.cuda()
 
     def fit_retriever(self, df: pd.DataFrame = None):
