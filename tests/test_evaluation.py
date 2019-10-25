@@ -47,7 +47,7 @@ def test_evaluate_pipeline():
     with open("./test_data.json", "w") as f:
         json.dump(test_data, f)
 
-    cdqa_pipeline = QAPipeline(reader="./models/bert_qa_vCPU-sklearn.joblib", n_jobs=-1)
+    cdqa_pipeline = QAPipeline(reader="./models/bert_qa.joblib", n_jobs=-1)
     cdqa_pipeline.fit_retriever(df)
 
     eval_dict = evaluate_pipeline(cdqa_pipeline, "./test_data.json", output_dir=None)
@@ -59,7 +59,7 @@ def test_evaluate_pipeline():
 def test_evaluate_reader():
 
     download_model("bert-squad_1.1", dir="./models")
-    cdqa_pipeline = QAPipeline(reader="./models/bert_qa_vCPU-sklearn.joblib", n_jobs=-1)
+    cdqa_pipeline = QAPipeline(reader="./models/bert_qa.joblib", n_jobs=-1)
     eval_dict = evaluate_reader(cdqa_pipeline, "./test_data.json")
 
     assert eval_dict["exact_match"] > 0.8

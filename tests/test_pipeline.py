@@ -16,14 +16,11 @@ def execute_pipeline(model, query, n_predictions=None):
     )
     df = filter_paragraphs(df)
 
-    if model == "bert":
-        reader_path = "models/bert_qa_vCPU-sklearn.joblib"
-    else:
-        reader_path = "models/distilbert_qa.joblib"
+    reader_path = "models/" + model + "_qa.joblib"
 
     cdqa_pipeline = QAPipeline(reader=reader_path)
     cdqa_pipeline.fit_retriever(df)
-    
+
     if n_predictions is not None:
         predictions = cdqa_pipeline.predict(query, n_predictions=n_predictions)
         result = []
