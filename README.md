@@ -1,3 +1,15 @@
+# Plans:
+
+ - restructure:
+  - Searching functionality (allow filter/query to existing documents; smarter document index and ranking)
+   - QAPipeline.fit_retriever (separate class: base retriever class + example with tfidf/bm25)
+   - QAPipeline.fit_reader (fit for q,a directly instead of squad-like)
+   - QAPipeline.predict (rewrite the BERT part and make a seprate class)
+  -  More elegant query parser
+   - currently, the query parser is quite stupid (for time and entity)
+
+
+
 # cdQA: Closed Domain Question Answering
 
 [![Build Status](https://travis-ci.com/cdqa-suite/cdQA.svg?branch=master)](https://travis-ci.com/cdqa-suite/cdQA)
